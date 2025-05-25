@@ -82,15 +82,35 @@ jobs:
       run: |
         cd test
         if [ -f "results/coverage.xml" ]; then
-          COVERAGE=$(grep -Po 'line-rate="\K[^"]*' results/coverage.xml | awk '{print $1 * 100}')
+          # Extract coverage rate and convert to percentage using python
+          COVERAGE=$(python3 -c "
+          import xml.etree.ElementTree as ET
+          import sys
+          try:
+              tree = ET.parse('results/coverage.xml')
+              root = tree.getroot()
+              line_rate = float(root.get('line-rate', 0))
+              coverage = round(line_rate * 100, 2)
+              print(f'{coverage}')
+          except Exception as e:
+              print('0')
+              sys.exit(1)
+          ")
+          
           echo "Coverage: $COVERAGE%"
           echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
           
-          # Convert to integer for comparison (multiply by 100 to avoid decimals)
-          COVERAGE_INT=$(echo "$COVERAGE * 100" | bc | cut -d. -f1)
-          THRESHOLD_INT=8000  # 80.00 * 100
+          # Use python for floating point comparison
+          RESULT=$(python3 -c "
+          coverage = float('$COVERAGE')
+          threshold = 80.0
+          if coverage >= threshold:
+              print('pass')
+          else:
+              print('fail')
+          ")
           
-          if [ "$COVERAGE_INT" -lt "$THRESHOLD_INT" ]; then
+          if [ "$RESULT" = "fail" ]; then
             echo "::error::Test coverage ($COVERAGE%) is below 80%"
             exit 1
           else
