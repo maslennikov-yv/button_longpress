@@ -18,13 +18,13 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
       
     - name: Cache Docker layers
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: /tmp/.buildx-cache
         key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -53,10 +53,11 @@ jobs:
           --cov-report=xml:results/coverage.xml \
           --cov-report=html:results/htmlcov \
           --junitxml=results/junit.xml \
-          --html=results/test-report.html
+          --html=results/test-report.html \
+          --self-contained-html
       
     - name: Upload test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: |
@@ -64,27 +65,63 @@ jobs:
           test/results/htmlcov/
           test/results/test-report.html
           test/results/coverage.xml
+        retention-days: 30
+        if-no-files-found: warn
       if: always()
       
     - name: Publish Test Report
-      uses: mikepenz/action-junit-report@v3
+      uses: mikepenz/action-junit-report@v4
       if: always()
       with:
         report_paths: 'test/results/junit.xml'
         fail_on_failure: true
         require_tests: true
+        check_name: 'Test Results'
         
     - name: Check test coverage
       run: |
         cd test
         if [ -f "results/coverage.xml" ]; then
-          COVERAGE=$(grep -Po 'line-rate="\K[^"]*' results/coverage.xml | awk '{print $1 * 100}')
+          # Extract coverage using a simple approach
+          COVERAGE_RAW=$(grep -o 'line-rate="[0-9.]*"' results/coverage.xml | head -1 | cut -d'"' -f2)
+          COVERAGE=$(python3 -c "print(round(float('$COVERAGE_RAW') * 100, 2))")
+          
           echo "Coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
-            echo "::error::Test coverage is below 80%"
+          echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
+          
+          # Simple comparison using python
+          RESULT=$(python3 -c "print('pass' if float('$COVERAGE') >= 80.0 else 'fail')")
+          
+          if [ "$RESULT" = "fail" ]; then
+            echo "::error::Test coverage ($COVERAGE%) is below 80%"
             exit 1
+          else
+            echo "::notice::Test coverage: $COVERAGE%"
           fi
         else
           echo "::warning::Coverage report not found"
         fi
       if: success()
+      
+    - name: Comment coverage on PR
+      if: github.event_name == 'pull_request' && success()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const coverage = process.env.COVERAGE;
+          if (coverage) {
+            const body = `## 📊 Test Coverage Report
+            
+            **Coverage: ${coverage}%**
+            
+            ${coverage >= 80 ? '✅' : '❌'} Coverage ${coverage >= 80 ? 'meets' : 'below'} the 80% threshold
+            
+            📁 [View detailed coverage report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+          }
