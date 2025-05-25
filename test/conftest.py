@@ -194,19 +194,34 @@ class MockGPIO:
     
     def gpio_set_level(self, gpio_num, level):
         """Set the level of a GPIO pin (simulates external button press/release)"""
-        if gpio_num in self.pins:
-            old_level = self.pins[gpio_num]['level']
-            self.pins[gpio_num]['level'] = level
-            
-            # Trigger ISR if level changed and there's a handler
-            if old_level != level and gpio_num in self.isr_handlers:
-                try:
-                    self.isr_handlers[gpio_num](self.isr_args[gpio_num])
-                except Exception as e:
-                    print(f"DEBUG: Error in ISR handler: {e}")
-            
-            return esp.ESP_OK
-        return esp.ESP_ERR_INVALID_ARG
+        if gpio_num not in self.pins:
+            # If pin is not configured, configure it first with default settings
+            self.pins[gpio_num] = {
+                'mode': esp.GPIO_MODE_INPUT,
+                'pull_up_en': esp.GPIO_PULLUP_ENABLE,
+                'pull_down_en': esp.GPIO_PULLDOWN_DISABLE,
+                'intr_type': esp.GPIO_INTR_ANYEDGE,
+                'level': 1 if esp.GPIO_PULLUP_ENABLE else 0,  # Default level
+                'configured': True
+            }
+    
+        old_level = self.pins[gpio_num]['level']
+        self.pins[gpio_num]['level'] = level
+    
+        # Trigger ISR if level changed and there's a handler
+        if old_level != level and gpio_num in self.isr_handlers:
+            print(f"DEBUG: GPIO {gpio_num} level changed from {old_level} to {level}, triggering ISR")
+            try:
+                self.isr_handlers[gpio_num](self.isr_args[gpio_num])
+            except Exception as e:
+                print(f"DEBUG: Error in ISR handler: {e}")
+        else:
+            if gpio_num not in self.isr_handlers:
+                print(f"DEBUG: No ISR handler for GPIO {gpio_num}")
+            elif old_level == level:
+                print(f"DEBUG: GPIO {gpio_num} level unchanged ({level})")
+    
+        return esp.ESP_OK
     
     def gpio_install_isr_service(self, intr_alloc_flags):
         """Install GPIO ISR service"""
@@ -260,24 +275,38 @@ esp = MockESP()
 gpio = MockGPIO()
 freertos = MockFreeRTOS()
 
-# Pytest fixtures
-@pytest.fixture
-def mock_button_component():
-    """Fixture to set up the button component mock environment"""
-    # Reset all mock states
+def reset_all_mocks():
+    """Reset all mock objects to initial state"""
+    global esp, gpio, freertos
+    
+    # Reset GPIO
     gpio.reset()
+    
+    # Reset FreeRTOS
     freertos.timers = {}
     freertos.timer_id = 0
     freertos.current_time_ms = 0
     
     # Install ISR service
     gpio.gpio_install_isr_service(0)
+
+# Pytest fixtures
+@pytest.fixture
+def mock_button_component():
+    """Fixture to set up the button component mock environment"""
+    # Reset all mock states
+    reset_all_mocks()
+    
+    # Clear button instances
+    import button_longpress
+    button_longpress.button_instances = {}
+    button_longpress.next_button_id = 1
     
     yield
     
     # Cleanup after test
-    gpio.reset()
-    freertos.timers = {}
+    reset_all_mocks()
+    button_longpress.button_instances = {}
 
 @pytest.fixture
 def button_config():

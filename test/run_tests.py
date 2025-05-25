@@ -18,9 +18,24 @@ def main():
     sys.path.insert(0, test_dir)
     
     try:
+        # Test 0: Debug button creation
+        print("\n0. Debug button creation...")
+        debug_result = subprocess.run([sys.executable, "debug_test.py"], 
+                                    capture_output=True, text=True)
+        if debug_result.returncode == 0:
+            print("   ✓ Debug test passed")
+        else:
+            print("   ✗ Debug test failed")
+            print("   Debug output:")
+            print(debug_result.stdout)
+            if debug_result.stderr:
+                print("   Debug errors:")
+                print(debug_result.stderr)
+            return 1
+        
         # Test 1: Verify imports work
         print("\n1. Verifying imports...")
-        from conftest import esp, gpio, freertos, ButtonConfig
+        from conftest import esp, gpio, freertos, ButtonConfig, reset_all_mocks
         import button_longpress
         print("   ✓ All imports successful")
         
@@ -28,15 +43,9 @@ def main():
         print("\n2. Quick functionality test...")
         
         # Reset state
-        gpio.reset()
-        freertos.timers = {}
-        freertos.timer_id = 0
-        freertos.current_time_ms = 0
+        reset_all_mocks()
         button_longpress.button_instances = {}
         button_longpress.next_button_id = 1
-        
-        # Install ISR service
-        gpio.gpio_install_isr_service(0)
         
         # Create button
         import ctypes

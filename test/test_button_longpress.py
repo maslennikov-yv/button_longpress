@@ -35,18 +35,18 @@ class TestButtonLongPress:
         # Clear the callback calls
         callback_calls.clear()
         
-        # Reset mock state
-        gpio.reset()
-        freertos.timers = {}
-        freertos.timer_id = 0
-        freertos.current_time_ms = 0
+        # Import here to ensure fresh state
+        import button_longpress
+        from conftest import reset_all_mocks
+        
+        # Reset all mock states
+        reset_all_mocks()
         
         # Clear button instances
         button_longpress.button_instances = {}
         button_longpress.next_button_id = 1
         
-        # Install ISR service
-        gpio.gpio_install_isr_service(0)
+        print("DEBUG: Test setup completed")
     
     def test_button_create_valid_config(self, mock_button_component, button_config):
         """Test button creation with valid configuration"""
