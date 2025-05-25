@@ -1,7 +1,7 @@
 # 🔘 ESP-IDF Button Long Press Component
 
-[![CI Status](https://github.com/maslennikov-yv/button-longpress/workflows/CI/badge.svg)](https://github.com/maslennikov-yv/button-longpress/actions)
-[![Coverage](https://img.shields.io/badge/coverage-80%2B-brightgreen)](https://github.com/maslennikov-yv/button-longpress/actions)
+[![CI Status](https://github.com/maslennikov-yv/button_longpress/workflows/CI/badge.svg)](https://github.com/maslennikov-yv/button_longpress/actions)
+[![Coverage](https://img.shields.io/badge/coverage-80%2B-brightgreen)](https://github.com/maslennikov-yv/button_longpress/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v4.4%2B-blue)](https://github.com/espressif/esp-idf)
 
@@ -26,13 +26,13 @@ Add this component to your ESP-IDF project:
 
 ```bash
 cd components
-git clone https://github.com/maslennikov-yv/button-longpress.git
+git clone https://github.com/maslennikov-yv/button_longpress.git
 ```
 
 Or add as a submodule:
 
 ```bash
-git submodule add https://github.com/maslennikov-yv/button-longpress.git components/button_longpress
+git submodule add https://github.com/maslennikov-yv/button_longpress.git components/button_longpress
 ```
 
 ### Basic Usage
