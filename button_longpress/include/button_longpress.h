@@ -31,6 +31,7 @@ typedef enum {
 typedef enum {
     BUTTON_EVENT_PRESSED,       /*!< Button pressed event */
     BUTTON_EVENT_RELEASED,      /*!< Button released event */
+    BUTTON_EVENT_CLICK,         /*!< Button single click detected */
     BUTTON_EVENT_LONG_PRESS,    /*!< Button long press detected */
     BUTTON_EVENT_DOUBLE_CLICK   /*!< Button double click detected */
 } button_event_t;

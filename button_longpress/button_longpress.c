@@ -223,10 +223,25 @@ static void button_double_click_timer_cb(TimerHandle_t timer)
     /* Reset double click state if timer expires */
     if (btn->waiting_for_double_click) {
         btn->waiting_for_double_click = false;
+        
+        /* Trigger single click event since no second click occurred */
+        if (btn->callback) {
+            xSemaphoreGive(btn->mutex);
+            btn->callback(BUTTON_EVENT_CLICK);
+            if (xSemaphoreTake(btn->mutex, portMAX_DELAY) != pdTRUE) {
+                ESP_LOGE(TAG, "Mutex error after click callback");
+                return;
+            }
+        }
+        
+        /* Ensure the button state is updated */
         if (!btn->is_pressed) {
             btn->state = BUTTON_STATE_IDLE;
         }
+        
+        /* Reset click counter */
         btn->click_count = 0;
+        ESP_LOGD(TAG, "Single click confirmed after timeout");
     }
     
     xSemaphoreGive(btn->mutex);
