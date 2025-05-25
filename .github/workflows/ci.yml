@@ -1,0 +1,90 @@
+name: ESP-IDF Button Component CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ main, master, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Cache Docker layers
+      uses: actions/cache@v3
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+          
+    - name: Build and run tests
+      run: |
+        cd test
+        # Check if docker-compose is available
+        if command -v docker-compose > /dev/null 2>&1; then
+          DOCKER_COMPOSE="docker-compose"
+        elif docker compose version > /dev/null 2>&1; then
+          DOCKER_COMPOSE="docker compose"
+        else
+          echo "Using Docker directly as Docker Compose is not available"
+          chmod +x run-tests-docker.sh
+          ./run-tests-docker.sh
+          exit $?
+        fi
+        
+        # If we get here, we have Docker Compose
+        $DOCKER_COMPOSE build
+        $DOCKER_COMPOSE run --rm test \
+          --cov=button_longpress \
+          --cov-report=xml:results/coverage.xml \
+          --cov-report=html:results/htmlcov \
+          --junitxml=results/junit.xml \
+          --html=results/test-report.html
+      
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: |
+          test/results/junit.xml
+          test/results/htmlcov/
+          test/results/test-report.html
+          test/results/coverage.xml
+      if: always()
+      
+    - name: Publish Test Report
+      uses: mikepenz/action-junit-report@v3
+      if: always()
+      with:
+        report_paths: 'test/results/junit.xml'
+        fail_on_failure: true
+        require_tests: true
+        
+    - name: Check test coverage
+      run: |
+        cd test
+        if [ -f "results/coverage.xml" ]; then
+          COVERAGE=$(grep -Po 'line-rate="\K[^"]*' results/coverage.xml | awk '{print $1 * 100}')
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "::error::Test coverage is below 80%"
+            exit 1
+          fi
+        else
+          echo "::warning::Coverage report not found"
+        fi
+      if: success()

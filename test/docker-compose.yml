@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./results:/app/results
+    environment:
+      - PYTHONPATH=/app
+      - COVERAGE_FILE=/app/results/.coverage
+      - PYTEST_ADDOPTS="--color=yes"
+    command: ["--cov=button_longpress", "--cov-report=xml:results/coverage.xml", "--cov-report=html:results/htmlcov", "--junitxml=results/junit.xml", "--html=results/test-report.html"]
