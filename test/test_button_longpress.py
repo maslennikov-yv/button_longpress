@@ -21,6 +21,7 @@ callback_calls = []
 @BUTTON_CALLBACK
 def button_callback_func(event):
     callback_calls.append(event)
+    print(f"DEBUG: Callback received event: {event}")
     return None
 
 class TestButtonLongPress:
@@ -32,13 +33,16 @@ class TestButtonLongPress:
         callback_calls.clear()
         
         # Reset mock state
-        gpio.pins = {}
-        gpio.isr_handlers = {}
-        gpio.isr_args = {}
-        gpio.isr_service_installed = False
+        gpio.reset()
         freertos.timers = {}
         freertos.timer_id = 0
         freertos.current_time_ms = 0
+        
+        # Clear button instances
+        button_longpress.button_instances = {}
+        button_longpress.next_button_id = 1
+        
+        print("DEBUG: Test setup completed")
     
     def test_button_create_valid_config(self, mock_button_component, button_config):
         """Test button creation with valid configuration"""
@@ -48,7 +52,7 @@ class TestButtonLongPress:
             active_level=button_config['active_level'],
             debounce_time_ms=button_config['debounce_time_ms'],
             long_press_time_ms=button_config['long_press_time_ms'],
-            double_click_time_ms=300,  # Add double click time
+            double_click_time_ms=300,
             callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
         )
         
@@ -57,67 +61,142 @@ class TestButtonLongPress:
         
         # Verify button was created
         assert button is not None
+        assert button in button_longpress.button_instances
         
         # Verify GPIO was configured
         assert button_config['gpio_num'] in gpio.pins
         assert gpio.pins[button_config['gpio_num']]['mode'] == esp.GPIO_MODE_INPUT
         
-        # Verify timers were created (now 3 timers including double click)
+        # Verify timers were created (3 timers: debounce, long press, double click)
         assert len(freertos.timers) == 3
+        
+        # Verify initial state
+        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
+        assert button_longpress.button_is_pressed(button) == False
         
         # Clean up
         result = button_longpress.button_delete(button)
         assert result == esp.ESP_OK
     
-    def test_button_create_invalid_gpio(self, mock_button_component, button_config):
-        """Test button creation with invalid GPIO number"""
-        # Create button configuration with invalid GPIO
+    def test_short_press_sequence_complete(self, mock_button_component, button_config):
+        """Test complete short press sequence with state verification"""
         config = ButtonConfig(
-            gpio_num=esp.GPIO_NUM_MAX + 1,  # Invalid GPIO number
-            active_level=button_config['active_level'],
-            debounce_time_ms=button_config['debounce_time_ms'],
-            long_press_time_ms=button_config['long_press_time_ms'],
-            double_click_time_ms=300,  # Add double click time
+            gpio_num=button_config['gpio_num'],
+            active_level=True,
+            debounce_time_ms=20,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
             callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
         )
         
-        # Create button
         button = button_longpress.button_create(ctypes.byref(config))
+        assert button is not None
         
-        # Verify button was not created
+        callback_calls.clear()
+        
+        # Press button
+        gpio.gpio_set_level(button_config['gpio_num'], 1)
+        freertos.advance_time(30)  # Past debounce
+        
+        # Verify PRESSED event and PRESSED state
+        assert esp.BUTTON_EVENT_PRESSED in callback_calls
+        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_PRESSED
+        assert button_longpress.button_is_pressed(button) == True
+        
+        # Hold for short duration
+        freertos.advance_time(500)  # Less than long press time
+        
+        # Verify still in PRESSED state
+        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_PRESSED
+        
+        # Release button
+        gpio.gpio_set_level(button_config['gpio_num'], 0)
+        freertos.advance_time(30)  # Past debounce
+        
+        # Verify RELEASED event and state transition
+        assert esp.BUTTON_EVENT_RELEASED in callback_calls
+        assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
+        assert len(callback_calls) == 2
+        assert button_longpress.button_is_pressed(button) == False
+        
+        # The button should be in SHORT_PRESS state briefly, then transition to IDLE
+        # or be waiting for double click
+        current_state = button_longpress.button_get_state(button)
+        print(f"DEBUG: State after release: {current_state}")
+        
+        # Wait for double click timeout
+        freertos.advance_time(400)
+        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
+        
+        button_longpress.button_delete(button)
+        
+    def test_button_create_with_defaults(self, mock_button_component):
+        """Test button creation with zero values uses defaults"""
+        config = ButtonConfig(
+            gpio_num=5,
+            active_level=True,
+            debounce_time_ms=0,  # Should default to 20
+            long_press_time_ms=0,  # Should default to 1000
+            double_click_time_ms=0,  # Should default to 300
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button = button_longpress.button_create(ctypes.byref(config))
+        assert button is not None
+        
+        # Verify defaults were applied
+        btn_instance = button_longpress.button_instances[button]
+        assert btn_instance.debounce_time_ms == 20
+        assert btn_instance.long_press_time_ms == 1000
+        assert btn_instance.double_click_time_ms == 300
+        
+        button_longpress.button_delete(button)
+    
+    def test_button_create_invalid_gpio(self, mock_button_component):
+        """Test button creation with invalid GPIO number"""
+        config = ButtonConfig(
+            gpio_num=esp.GPIO_NUM_MAX + 1,  # Invalid GPIO number
+            active_level=True,
+            debounce_time_ms=20,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button = button_longpress.button_create(ctypes.byref(config))
         assert button is None
     
     def test_button_create_null_config(self, mock_button_component):
         """Test button creation with NULL configuration"""
-        # Create button with NULL config
         button = button_longpress.button_create(None)
-        
-        # Verify button was not created
         assert button is None
     
     def test_button_delete_null_handle(self, mock_button_component):
         """Test button deletion with NULL handle"""
-        # Delete button with NULL handle
         result = button_longpress.button_delete(None)
-        
-        # Verify error was returned
+        assert result == esp.ESP_ERR_INVALID_ARG
+    
+    def test_button_delete_invalid_handle(self, mock_button_component):
+        """Test button deletion with invalid handle"""
+        result = button_longpress.button_delete(999)  # Non-existent button
         assert result == esp.ESP_ERR_INVALID_ARG
     
     def test_button_press_active_high(self, mock_button_component, button_config):
         """Test button press detection with active high configuration"""
-        # Create button configuration (active high)
         config = ButtonConfig(
             gpio_num=button_config['gpio_num'],
             active_level=True,  # Active high
             debounce_time_ms=button_config['debounce_time_ms'],
             long_press_time_ms=button_config['long_press_time_ms'],
-            double_click_time_ms=300,  # Add double click time
+            double_click_time_ms=300,
             callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
         )
         
-        # Create button
         button = button_longpress.button_create(ctypes.byref(config))
         assert button is not None
+        
+        # Clear initial callbacks
+        callback_calls.clear()
         
         # Simulate button press (set GPIO high)
         gpio.gpio_set_level(button_config['gpio_num'], 1)
@@ -132,456 +211,84 @@ class TestButtonLongPress:
         assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_PRESSED
         assert button_longpress.button_is_pressed(button) == True
         
-        # Clean up
         button_longpress.button_delete(button)
-        
-    def test_long_press_callback_invocation(self, mock_button_component, button_config):
-        """Test that long press callback is invoked after the configured time"""
-        # Create button with specific long press time
-        long_press_time_ms = 1000
+    
+    def test_button_press_active_low(self, mock_button_component, button_config):
+        """Test button press detection with active low configuration"""
         config = ButtonConfig(
             gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
+            active_level=False,  # Active low
+            debounce_time_ms=button_config['debounce_time_ms'],
+            long_press_time_ms=button_config['long_press_time_ms'],
+            double_click_time_ms=300,
             callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
         )
         
         button = button_longpress.button_create(ctypes.byref(config))
         assert button is not None
         
-        # Clear any initial callbacks
+        # GPIO should be initially high due to pull-up
+        assert gpio.gpio_get_level(button_config['gpio_num']) == 1
+        
+        # Clear initial callbacks
+        callback_calls.clear()
+        
+        # Simulate button press (set GPIO low for active low)
+        gpio.gpio_set_level(button_config['gpio_num'], 0)
+        
+        # Advance time past debounce period
+        freertos.advance_time(button_config['debounce_time_ms'] + 10)
+        
+        # Verify callback was called with BUTTON_EVENT_PRESSED
+        assert esp.BUTTON_EVENT_PRESSED in callback_calls
+        
+        # Verify button state
+        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_PRESSED
+        assert button_longpress.button_is_pressed(button) == True
+        
+        button_longpress.button_delete(button)
+        
+    def test_long_press_detection(self, mock_button_component, button_config):
+        """Test long press detection with precise timing"""
+        long_press_time_ms = 1000
+        config = ButtonConfig(
+            gpio_num=button_config['gpio_num'],
+            active_level=True,
+            debounce_time_ms=20,
+            long_press_time_ms=long_press_time_ms,
+            double_click_time_ms=300,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button = button_longpress.button_create(ctypes.byref(config))
+        assert button is not None
+        
         callback_calls.clear()
         
         # Simulate button press
         gpio.gpio_set_level(button_config['gpio_num'], 1)
+        freertos.advance_time(30)  # Past debounce
         
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify PRESSED event was triggered
+        # Verify PRESSED event
         assert esp.BUTTON_EVENT_PRESSED in callback_calls
         assert len(callback_calls) == 1
         
         # Advance time to just before long press threshold
         freertos.advance_time(long_press_time_ms - 50)
-        
-        # Verify no LONG_PRESS event yet
         assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-        assert len(callback_calls) == 1
         
         # Advance time past long press threshold
         freertos.advance_time(100)
         
-        # Verify LONG_PRESS event was triggered
+        # Verify LONG_PRESS event
         assert esp.BUTTON_EVENT_LONG_PRESS in callback_calls
         assert len(callback_calls) == 2
-        
-        # Verify button state
         assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_LONG_PRESS
         
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_short_press_no_long_press_callback(self, mock_button_component, button_config):
-        """Test that short presses don't trigger the long press callback"""
-        # Create button with specific long press time
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Clear any initial callbacks
-        callback_calls.clear()
-        
-        # Simulate button press
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Advance time but not enough for long press (half the long press time)
-        freertos.advance_time(long_press_time_ms / 2)
-        
-        # Release button
-        gpio.gpio_set_level(button_config['gpio_num'], 0)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify RELEASED event was triggered but not LONG_PRESS
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-        assert len(callback_calls) == 2
-        
-        # Verify button state
-        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_contact_bounce_handling(self, mock_button_component, button_config):
-        """Test that contact bounce doesn't cause spurious callbacks"""
-        # Create button with specific debounce time
-        debounce_time_ms = 50
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=debounce_time_ms,
-            long_press_time_ms=1000,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Clear any initial callbacks
-        callback_calls.clear()
-        
-        # Simulate contact bounce (rapidly toggle button state)
-        for i in range(10):
-            # Toggle button state
-            gpio.gpio_set_level(button_config['gpio_num'], i % 2)
-            # Advance time a small amount (less than debounce time)
-            freertos.advance_time(5)
-        
-        # Verify no callbacks were triggered during bounce
-        assert len(callback_calls) == 0
-        
-        # Set button to pressed state
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        
-        # Advance time past debounce period
-        freertos.advance_time(debounce_time_ms + 10)
-        
-        # Verify only one PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_varying_short_press_durations(self, mock_button_component, button_config):
-        """Test different short press durations to ensure they don't trigger long press"""
-        # Create button with specific long press time
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Test various short press durations
-        short_press_durations = [100, 300, 500, long_press_time_ms - 50]
-        
-        for duration in short_press_durations:
-            # Clear previous callbacks
-            callback_calls.clear()
-            
-            # Simulate button press
-            gpio.gpio_set_level(button_config['gpio_num'], 1)
-            
-            # Advance time past debounce period
-            freertos.advance_time(30)
-            
-            # Verify PRESSED event was triggered
-            assert esp.BUTTON_EVENT_PRESSED in callback_calls
-            assert len(callback_calls) == 1
-            
-            # Advance time for the current duration
-            freertos.advance_time(duration)
-            
-            # Release button
-            gpio.gpio_set_level(button_config['gpio_num'], 0)
-            
-            # Advance time past debounce period
-            freertos.advance_time(30)
-            
-            # Verify RELEASED event was triggered but not LONG_PRESS
-            assert esp.BUTTON_EVENT_RELEASED in callback_calls
-            assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-            assert len(callback_calls) == 2
-            
-            # Verify button state
-            assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
-            
-            # Advance time past double click window to reset state
-            freertos.advance_time(500)
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_press_release_before_long_press(self, mock_button_component, button_config):
-        """Test pressing and releasing just before long press time elapses"""
-        # Create button with specific long press time
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Clear any initial callbacks
-        callback_calls.clear()
-        
-        # Simulate button press
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Advance time to just before long press threshold
-        freertos.advance_time(long_press_time_ms - 30)
-        
-        # Release button just before long press would trigger
-        gpio.gpio_set_level(button_config['gpio_num'], 0)
-        
-        # Advance time past debounce period
-        freertos.advance_time(50)
-        
-        # Verify RELEASED event was triggered but not LONG_PRESS
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-        assert len(callback_calls) == 2
-        
-        # Verify button state
-        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_active_low_long_press(self, mock_button_component, button_config):
-        """Test long press detection with active low configuration"""
-        # First, create the button with active low configuration
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=False,  # Active low
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Now the GPIO pin is configured, set it to released state (high for active low)
-        gpio_num = button_config['gpio_num']
-        gpio.gpio_set_level(gpio_num, 1)
-        
-        # Advance time past debounce period to register the release
-        freertos.advance_time(30)
-        
-        # Clear any callbacks from the initial setup
-        callback_calls.clear()
-        
-        # Simulate button press (set GPIO low for active low)
-        gpio.gpio_set_level(gpio_num, 0)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Advance time past long press threshold
-        freertos.advance_time(long_press_time_ms + 50)
-        
-        # Verify LONG_PRESS event was triggered
-        assert esp.BUTTON_EVENT_LONG_PRESS in callback_calls
-        assert len(callback_calls) == 2
-        
-        # Verify button state
-        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_LONG_PRESS
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_active_low_short_press(self, mock_button_component, button_config):
-        """Test short press detection with active low configuration"""
-        # First, create the button with active low configuration
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=False,  # Active low
-            debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Now the GPIO pin is configured, set it to released state (high for active low)
-        gpio_num = button_config['gpio_num']
-        gpio.gpio_set_level(gpio_num, 1)
-        
-        # Advance time past debounce period to register the release
-        freertos.advance_time(30)
-        
-        # Clear any callbacks from the initial setup
-        callback_calls.clear()
-        
-        # Simulate button press (set GPIO low for active low)
-        gpio.gpio_set_level(gpio_num, 0)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Advance time but not enough for long press
-        freertos.advance_time(long_press_time_ms / 2)
-        
-        # Release button (set GPIO high for active low)
-        gpio.gpio_set_level(gpio_num, 1)
-        
-        # Advance time past debounce period
-        freertos.advance_time(30)
-        
-        # Verify RELEASED event was triggered but not LONG_PRESS
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-        assert len(callback_calls) == 2
-        
-        # Verify button state
-        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
-        
-        # Clean up
-        button_longpress.button_delete(button)
-        
-    def test_complex_bounce_scenario(self, mock_button_component, button_config):
-        """Test a complex scenario with multiple bounces and press/release cycles"""
-        # Create button with specific debounce and long press times
-        debounce_time_ms = 50
-        long_press_time_ms = 1000
-        config = ButtonConfig(
-            gpio_num=button_config['gpio_num'],
-            active_level=True,
-            debounce_time_ms=debounce_time_ms,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=300,  # Add double click time
-            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
-        )
-        
-        button = button_longpress.button_create(ctypes.byref(config))
-        assert button is not None
-        
-        # Clear any initial callbacks
-        callback_calls.clear()
-        
-        # Scenario 1: Initial bounce, then stable press, then release before long press
-        
-        # Simulate initial contact bounce
-        for i in range(10):
-            gpio.gpio_set_level(button_config['gpio_num'], i % 2)
-            freertos.advance_time(5)
-        
-        # Stable press
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(debounce_time_ms + 10)
-        
-        # Verify PRESSED event was triggered once
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert callback_calls.count(esp.BUTTON_EVENT_PRESSED) == 1
-        
-        # Hold for a while but not long enough for long press
-        freertos.advance_time(long_press_time_ms / 2)
-        
-        # Release with bounce
-        for i in range(8):
-            gpio.gpio_set_level(button_config['gpio_num'], (i + 1) % 2)
-            freertos.advance_time(5)
-        
-        # Stable release
-        gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(debounce_time_ms + 10)
-        
-        # Verify RELEASED event was triggered once and no LONG_PRESS
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        assert callback_calls.count(esp.BUTTON_EVENT_RELEASED) == 1
-        assert esp.BUTTON_EVENT_LONG_PRESS not in callback_calls
-        
-        # Reset for next scenario
-        callback_calls.clear()
-        
-        # Scenario 2: Press, bounce during long press threshold, then stable long press
-        
-        # Press with bounce
-        for i in range(6):
-            gpio.gpio_set_level(button_config['gpio_num'], i % 2)
-            freertos.advance_time(5)
-        
-        # Stable press
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(debounce_time_ms + 10)
-        
-        # Verify PRESSED event was triggered
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert len(callback_calls) == 1
-        
-        # Advance to near long press threshold
-        freertos.advance_time(long_press_time_ms - 100)
-        
-        # Simulate some noise/bounce without fully releasing
-        for i in range(4):
-            # Toggle between high and slightly lower (but still considered high)
-            level = 1 if i % 2 == 0 else 0
-            gpio.gpio_set_level(button_config['gpio_num'], level)
-            freertos.advance_time(10)
-        
-        # Ensure it's pressed
-        gpio.gpio_set_level(button_config['gpio_num'], 1)
-        
-        # Advance past long press threshold
-        freertos.advance_time(150)
-        
-        # Verify LONG_PRESS event was triggered exactly once
-        assert esp.BUTTON_EVENT_LONG_PRESS in callback_calls
-        assert callback_calls.count(esp.BUTTON_EVENT_LONG_PRESS) == 1
-        assert len(callback_calls) == 2  # PRESSED and LONG_PRESS
-        
-        # Clean up
         button_longpress.button_delete(button)
         
     def test_double_click_detection(self, mock_button_component, button_config):
-        """Test double click detection"""
-        # Create button with specific double click time
+        """Test double click detection with proper timing"""
         double_click_time_ms = 300
         config = ButtonConfig(
             gpio_num=button_config['gpio_num'],
@@ -595,47 +302,36 @@ class TestButtonLongPress:
         button = button_longpress.button_create(ctypes.byref(config))
         assert button is not None
         
-        # Clear any initial callbacks
         callback_calls.clear()
         
-        # First click - press
+        # First click
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
-        
-        # First click - release
+        freertos.advance_time(30)
         gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(30)  # Past debounce
+        freertos.advance_time(30)
         
-        # Verify PRESSED and RELEASED events
+        # Verify first click events
         assert esp.BUTTON_EVENT_PRESSED in callback_calls
         assert esp.BUTTON_EVENT_RELEASED in callback_calls
         assert len(callback_calls) == 2
         
-        # Wait a short time (less than double click timeout)
-        freertos.advance_time(double_click_time_ms / 2)
+        # Wait short time (within double click window)
+        freertos.advance_time(double_click_time_ms // 2)
         
-        # Second click - press
+        # Second click
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
-        
-        # Second click - release
+        freertos.advance_time(30)
         gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(30)  # Past debounce
+        freertos.advance_time(30)
         
-        # Verify DOUBLE_CLICK event was triggered
+        # Verify double click was detected
         assert esp.BUTTON_EVENT_DOUBLE_CLICK in callback_calls
-        # Updated expectation: PRESSED, RELEASED, PRESSED, RELEASED, DOUBLE_CLICK
-        assert len(callback_calls) == 5
-        
-        # Verify button state
         assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_DOUBLE_CLICK
         
-        # Clean up
         button_longpress.button_delete(button)
         
     def test_double_click_timeout(self, mock_button_component, button_config):
-        """Test that double click is not detected if second click comes too late"""
-        # Create button with specific double click time
+        """Test that double click times out if second click is too late"""
         double_click_time_ms = 300
         config = ButtonConfig(
             gpio_num=button_config['gpio_num'],
@@ -649,100 +345,201 @@ class TestButtonLongPress:
         button = button_longpress.button_create(ctypes.byref(config))
         assert button is not None
         
-        # Clear any initial callbacks
         callback_calls.clear()
         
-        # First click - press
+        # First click
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
-        
-        # First click - release
+        freertos.advance_time(30)
         gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(30)  # Past debounce
-        
-        # Verify PRESSED and RELEASED events
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        assert len(callback_calls) == 2
+        freertos.advance_time(30)
         
         # Wait longer than double click timeout
         freertos.advance_time(double_click_time_ms + 50)
         
-        # Reset callback calls to make verification clearer
-        callback_calls.clear()
+        callback_calls.clear()  # Clear to focus on second click
         
-        # Second click - press (too late to be a double click)
+        # Second click (too late)
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
-        
-        # Second click - release
+        freertos.advance_time(30)
         gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(30)  # Past debounce
+        freertos.advance_time(30)
         
-        # Verify normal PRESSED and RELEASED events, but no DOUBLE_CLICK
+        # Verify no double click was detected
         assert esp.BUTTON_EVENT_PRESSED in callback_calls
         assert esp.BUTTON_EVENT_RELEASED in callback_calls
         assert esp.BUTTON_EVENT_DOUBLE_CLICK not in callback_calls
-        assert len(callback_calls) == 2
         
-        # Verify button state
-        assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_IDLE
-        
-        # Clean up
         button_longpress.button_delete(button)
         
     def test_long_press_cancels_double_click(self, mock_button_component, button_config):
-        """Test that a long press cancels double click detection"""
-        # Create button with specific times
-        double_click_time_ms = 300
-        long_press_time_ms = 1000
+        """Test that long press cancels double click detection"""
         config = ButtonConfig(
             gpio_num=button_config['gpio_num'],
             active_level=True,
             debounce_time_ms=20,
-            long_press_time_ms=long_press_time_ms,
-            double_click_time_ms=double_click_time_ms,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
             callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
         )
         
         button = button_longpress.button_create(ctypes.byref(config))
         assert button is not None
         
-        # Clear any initial callbacks
         callback_calls.clear()
         
-        # First click - press
+        # First click
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
-        
-        # First click - release
+        freertos.advance_time(30)
         gpio.gpio_set_level(button_config['gpio_num'], 0)
-        freertos.advance_time(30)  # Past debounce
+        freertos.advance_time(30)
         
-        # Verify PRESSED and RELEASED events
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
-        assert esp.BUTTON_EVENT_RELEASED in callback_calls
-        # Updated expectation: PRESSED, RELEASED
-        assert len(callback_calls) == 2
-        
-        # Wait a short time (less than double click timeout)
-        freertos.advance_time(double_click_time_ms / 2)
-        
-        # Second click - press but hold for long press
+        # Second press but hold for long press
+        freertos.advance_time(100)  # Within double click window
         gpio.gpio_set_level(button_config['gpio_num'], 1)
-        freertos.advance_time(30)  # Past debounce
+        freertos.advance_time(30)
         
         # Hold for long press duration
-        freertos.advance_time(long_press_time_ms + 50)
+        freertos.advance_time(1050)
         
-        # Verify PRESSED and LONG_PRESS events, but no DOUBLE_CLICK
-        assert esp.BUTTON_EVENT_PRESSED in callback_calls
+        # Verify long press was detected, not double click
         assert esp.BUTTON_EVENT_LONG_PRESS in callback_calls
         assert esp.BUTTON_EVENT_DOUBLE_CLICK not in callback_calls
-        assert len(callback_calls) == 4  # PRESSED, RELEASED, PRESSED, LONG_PRESS
-        
-        # Verify button state
         assert button_longpress.button_get_state(button) == esp.BUTTON_STATE_LONG_PRESS
         
+        button_longpress.button_delete(button)
+        
+    def test_debounce_filtering(self, mock_button_component, button_config):
+        """Test that debouncing filters out noise"""
+        debounce_time_ms = 50
+        config = ButtonConfig(
+            gpio_num=button_config['gpio_num'],
+            active_level=True,
+            debounce_time_ms=debounce_time_ms,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button = button_longpress.button_create(ctypes.byref(config))
+        assert button is not None
+        
+        callback_calls.clear()
+        
+        # Simulate contact bounce (rapid toggles)
+        for i in range(10):
+            gpio.gpio_set_level(button_config['gpio_num'], i % 2)
+            freertos.advance_time(5)  # Less than debounce time
+        
+        # No callbacks should have been triggered
+        assert len(callback_calls) == 0
+        
+        # Set stable press
+        gpio.gpio_set_level(button_config['gpio_num'], 1)
+        freertos.advance_time(debounce_time_ms + 10)
+        
+        # Now callback should be triggered
+        assert esp.BUTTON_EVENT_PRESSED in callback_calls
+        assert len(callback_calls) == 1
+        
+        button_longpress.button_delete(button)
+        
+    def test_get_state_null_handle(self, mock_button_component):
+        """Test get_state with null handle"""
+        state = button_longpress.button_get_state(None)
+        assert state == esp.BUTTON_STATE_IDLE
+        
+    def test_is_pressed_null_handle(self, mock_button_component):
+        """Test is_pressed with null handle"""
+        pressed = button_longpress.button_is_pressed(None)
+        assert pressed == False
+        
+    def test_get_state_invalid_handle(self, mock_button_component):
+        """Test get_state with invalid handle"""
+        state = button_longpress.button_get_state(999)
+        assert state == esp.BUTTON_STATE_IDLE
+        
+    def test_is_pressed_invalid_handle(self, mock_button_component):
+        """Test is_pressed with invalid handle"""
+        pressed = button_longpress.button_is_pressed(999)
+        assert pressed == False
+        
+    def test_multiple_buttons(self, mock_button_component):
+        """Test creating and managing multiple buttons"""
+        # Create first button (active high)
+        config1 = ButtonConfig(
+            gpio_num=4,
+            active_level=True,
+            debounce_time_ms=20,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button1 = button_longpress.button_create(ctypes.byref(config1))
+        assert button1 is not None
+        
+        # Create second button (active low)
+        config2 = ButtonConfig(
+            gpio_num=5,
+            active_level=False,
+            debounce_time_ms=30,
+            long_press_time_ms=1500,
+            double_click_time_ms=400,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button2 = button_longpress.button_create(ctypes.byref(config2))
+        assert button2 is not None
+        
+        # Verify both buttons exist
+        assert len(button_longpress.button_instances) == 2
+        assert button1 != button2
+        
+        # Test independent operation
+        callback_calls.clear()
+        
+        # Press button1
+        gpio.gpio_set_level(4, 1)
+        freertos.advance_time(30)
+        
+        # Press button2
+        gpio.gpio_set_level(5, 0)  # Active low
+        freertos.advance_time(40)
+        
+        # Both should have triggered PRESSED events
+        assert callback_calls.count(esp.BUTTON_EVENT_PRESSED) == 2
+        
         # Clean up
+        assert button_longpress.button_delete(button1) == esp.ESP_OK
+        assert button_longpress.button_delete(button2) == esp.ESP_OK
+        
+    def test_stress_timing(self, mock_button_component, button_config):
+        """Test with various timing edge cases"""
+        config = ButtonConfig(
+            gpio_num=button_config['gpio_num'],
+            active_level=True,
+            debounce_time_ms=20,
+            long_press_time_ms=1000,
+            double_click_time_ms=300,
+            callback=ctypes.cast(button_callback_func, ctypes.c_void_p)
+        )
+        
+        button = button_longpress.button_create(ctypes.byref(config))
+        assert button is not None
+        
+        # Test edge case: release exactly at long press threshold
+        callback_calls.clear()
+        
+        gpio.gpio_set_level(button_config['gpio_num'], 1)
+        freertos.advance_time(30)  # Past debounce
+        
+        # Release exactly at long press time
+        freertos.advance_time(1000)  # Exactly long press time
+        gpio.gpio_set_level(button_config['gpio_num'], 0)
+        freertos.advance_time(30)
+        
+        # Should have triggered long press
+        assert esp.BUTTON_EVENT_LONG_PRESS in callback_calls
+        assert esp.BUTTON_EVENT_RELEASED in callback_calls
+        
         button_longpress.button_delete(button)

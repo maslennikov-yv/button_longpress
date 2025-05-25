@@ -16,6 +16,9 @@ static void button_event_handler(button_event_t event)
         case BUTTON_EVENT_RELEASED:
             ESP_LOGI(TAG, "Button released");
             break;
+        case BUTTON_EVENT_CLICK:
+            ESP_LOGI(TAG, "Button single click detected!");
+            break;
         case BUTTON_EVENT_LONG_PRESS:
             ESP_LOGI(TAG, "Button long press detected!");
             break;
@@ -30,7 +33,7 @@ static void button_event_handler(button_event_t event)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Button long press and double click example");
-    
+
     // Configure button
     button_config_t btn_config = {
         .gpio_num = GPIO_NUM_0,           // Using GPIO0 (usually the BOOT button on many ESP32 dev boards)
@@ -40,16 +43,16 @@ void app_main(void)
         .double_click_time_ms = 300,      // 300ms for double click detection
         .callback = button_event_handler  // Set callback function
     };
-    
+
     // Create button
     button_handle_t btn_handle = button_create(&btn_config);
     if (btn_handle == NULL) {
         ESP_LOGE(TAG, "Failed to create button");
         return;
     }
-    
+
     ESP_LOGI(TAG, "Button initialized. Try different interactions:");
-    ESP_LOGI(TAG, "1. Press and release for a simple click");
+    ESP_LOGI(TAG, "1. Press and release for a single click");
     ESP_LOGI(TAG, "2. Press twice quickly for a double click");
     ESP_LOGI(TAG, "3. Press and hold for a long press");
     

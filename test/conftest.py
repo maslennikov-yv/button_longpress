@@ -1,50 +1,3 @@
-import pytest
-import ctypes
-import time
-from unittest.mock import MagicMock, patch
-import sys
-import os
-import json
-
-# Add path to the button_longpress component
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-
-# Mock ESP-IDF components
-class MockESP:
-    """Mock class for ESP-IDF functionality"""
-    
-    # ESP error codes
-    ESP_OK = 0
-    ESP_FAIL = -1
-    ESP_ERR_INVALID_ARG = -2
-    ESP_ERR_INVALID_STATE = -3
-    
-    # GPIO definitions
-    GPIO_NUM_MAX = 40
-    GPIO_MODE_INPUT = 1
-    GPIO_PULLUP_ENABLE = 1
-    GPIO_PULLDOWN_ENABLE = 1
-    GPIO_PULLUP_DISABLE = 0
-    GPIO_PULLDOWN_DISABLE = 0
-    GPIO_INTR_ANYEDGE = 3
-    
-    # Button states
-    BUTTON_STATE_IDLE = 0
-    BUTTON_STATE_PRESSED = 1
-    BUTTON_STATE_LONG_PRESS = 2
-    BUTTON_STATE_SHORT_PRESS = 3
-    BUTTON_STATE_DOUBLE_CLICK = 4
-    
-    # Button events
-    BUTTON_EVENT_PRESSED = 0
-    BUTTON_EVENT_RELEASED = 1
-    BUTTON_EVENT_LONG_PRESS = 2
-    BUTTON_EVENT_DOUBLE_CLICK = 3
-
-# Create a global instance of MockESP
-esp = MockESP()
-
-# Mock FreeRTOS functionality
 class MockFreeRTOS:
     """Mock class for FreeRTOS functionality"""
     
@@ -52,6 +5,7 @@ class MockFreeRTOS:
         self.timers = {}
         self.timer_id = 0
         self.current_time_ms = 0
+        self.tick_rate_hz = 100  # 100Hz tick rate (10ms per tick)
     
     def xTimerCreate(self, name, period_ticks, auto_reload, timer_id, callback):
         """Create a timer"""
@@ -59,23 +13,25 @@ class MockFreeRTOS:
         timer = {
             'id': self.timer_id,
             'name': name,
-            'period_ms': period_ticks * 10,  # Convert ticks to ms (assuming 100Hz tick rate)
+            'period_ms': period_ticks * (1000 // self.tick_rate_hz),  # Convert ticks to ms
             'auto_reload': auto_reload,
             'timer_id': timer_id,
             'callback': callback,
             'running': False,
-            'expiry_time': 0
+            'expiry_time': 0,
+            'created_time': self.current_time_ms
         }
         self.timers[self.timer_id] = timer
-        print(f"DEBUG: Timer created: {self.timer_id}, name: {name}, period: {period_ticks * 10}ms")
+        print(f"DEBUG: Timer created: {self.timer_id}, name: {name}, period: {timer['period_ms']}ms")
         return self.timer_id
     
     def xTimerStart(self, timer_id, block_time):
         """Start a timer"""
         if timer_id in self.timers:
-            self.timers[timer_id]['running'] = True
-            self.timers[timer_id]['expiry_time'] = self.current_time_ms + self.timers[timer_id]['period_ms']
-            print(f"DEBUG: Timer {timer_id} started, will expire at {self.timers[timer_id]['expiry_time']}ms")
+            timer = self.timers[timer_id]
+            timer['running'] = True
+            timer['expiry_time'] = self.current_time_ms + timer['period_ms']
+            print(f"DEBUG: Timer {timer_id} ({timer['name']}) started, will expire at {timer['expiry_time']}ms")
             return 1  # pdPASS
         print(f"DEBUG: Timer {timer_id} not found in xTimerStart")
         return 0  # pdFAIL
@@ -83,8 +39,9 @@ class MockFreeRTOS:
     def xTimerStop(self, timer_id, block_time):
         """Stop a timer"""
         if timer_id in self.timers:
-            self.timers[timer_id]['running'] = False
-            print(f"DEBUG: Timer {timer_id} stopped")
+            timer = self.timers[timer_id]
+            timer['running'] = False
+            print(f"DEBUG: Timer {timer_id} ({timer['name']}) stopped")
             return 1  # pdPASS
         print(f"DEBUG: Timer {timer_id} not found in xTimerStop")
         return 0  # pdFAIL
@@ -92,8 +49,9 @@ class MockFreeRTOS:
     def xTimerDelete(self, timer_id, block_time):
         """Delete a timer"""
         if timer_id in self.timers:
+            timer_name = self.timers[timer_id]['name']
             del self.timers[timer_id]
-            print(f"DEBUG: Timer {timer_id} deleted")
+            print(f"DEBUG: Timer {timer_id} ({timer_name}) deleted")
             return 1  # pdPASS
         print(f"DEBUG: Timer {timer_id} not found in xTimerDelete")
         return 0  # pdFAIL
@@ -101,9 +59,10 @@ class MockFreeRTOS:
     def xTimerReset(self, timer_id, block_time):
         """Reset a timer"""
         if timer_id in self.timers:
-            self.timers[timer_id]['expiry_time'] = self.current_time_ms + self.timers[timer_id]['period_ms']
-            self.timers[timer_id]['running'] = True
-            print(f"DEBUG: Timer {timer_id} reset, will expire at {self.timers[timer_id]['expiry_time']}ms")
+            timer = self.timers[timer_id]
+            timer['expiry_time'] = self.current_time_ms + timer['period_ms']
+            timer['running'] = True
+            print(f"DEBUG: Timer {timer_id} ({timer['name']}) reset, will expire at {timer['expiry_time']}ms")
             return 1  # pdPASS
         print(f"DEBUG: Timer {timer_id} not found in xTimerReset")
         return 0  # pdFAIL
@@ -111,6 +70,12 @@ class MockFreeRTOS:
     def xTimerResetFromISR(self, timer_id, higher_priority_task_woken):
         """Reset a timer from ISR"""
         result = self.xTimerReset(timer_id, 0)
+        if result and higher_priority_task_woken:
+            # Simulate setting the higher priority task woken flag
+            try:
+                higher_priority_task_woken.contents = ctypes.c_int(1)
+            except:
+                pass
         print(f"DEBUG: Timer {timer_id} reset from ISR, result: {result}")
         return result
     
@@ -123,32 +88,71 @@ class MockFreeRTOS:
     
     def xTaskGetTickCount(self):
         """Get current tick count"""
-        return self.current_time_ms // 10  # Convert ms to ticks (assuming 100Hz tick rate)
+        return self.current_time_ms * self.tick_rate_hz // 1000  # Convert ms to ticks
     
     def advance_time(self, ms):
         """Advance time and process timers"""
+        if ms <= 0:
+            return
+            
         print(f"DEBUG: Advancing time by {ms}ms from {self.current_time_ms}ms to {self.current_time_ms + ms}ms")
-        self.current_time_ms += ms
+        target_time = self.current_time_ms + ms
         
-        # Check for expired timers
-        for timer_id, timer in list(self.timers.items()):
-            if timer['running'] and self.current_time_ms >= timer['expiry_time']:
-                print(f"DEBUG: Timer {timer_id} expired at {self.current_time_ms}ms")
-                timer['running'] = not timer['auto_reload']
+        # Process timers in chronological order
+        while self.current_time_ms < target_time:
+            # Find the next timer to expire
+            next_expiry = target_time
+            next_timer = None
+            
+            for timer_id, timer in self.timers.items():
+                if (timer['running'] and 
+                    timer['expiry_time'] > self.current_time_ms and 
+                    timer['expiry_time'] <= next_expiry):
+                    next_expiry = timer['expiry_time']
+                    next_timer = timer_id
+            
+            if next_timer is not None:
+                # Advance to the next timer expiry
+                self.current_time_ms = next_expiry
+                timer = self.timers[next_timer]
+                
+                print(f"DEBUG: Timer {next_timer} ({timer['name']}) expired at {self.current_time_ms}ms")
+                
+                # Stop the timer (one-shot behavior)
+                timer['running'] = False
+                
+                # Handle auto-reload
                 if timer['auto_reload']:
                     timer['expiry_time'] = self.current_time_ms + timer['period_ms']
+                    timer['running'] = True
+                    print(f"DEBUG: Timer {next_timer} auto-reloaded, next expiry: {timer['expiry_time']}ms")
                 
                 # Call the callback
                 if timer['callback']:
-                    print(f"DEBUG: Calling callback for timer {timer_id}")
-                    timer['callback'](timer_id)
+                    print(f"DEBUG: Calling callback for timer {next_timer}")
+                    try:
+                        timer['callback'](next_timer)
+                    except Exception as e:
+                        print(f"DEBUG: Error in timer callback: {e}")
                 else:
-                    print(f"DEBUG: No callback for timer {timer_id}")
+                    print(f"DEBUG: No callback for timer {next_timer}")
+            else:
+                # No more timers to process, advance to target time
+                self.current_time_ms = target_time
+    
+    def get_running_timers(self):
+        """Get list of currently running timers (for debugging)"""
+        running = []
+        for timer_id, timer in self.timers.items():
+            if timer['running']:
+                running.append({
+                    'id': timer_id,
+                    'name': timer['name'],
+                    'expiry_time': timer['expiry_time'],
+                    'time_remaining': max(0, timer['expiry_time'] - self.current_time_ms)
+                })
+        return running
 
-# Create a global instance of MockFreeRTOS
-freertos = MockFreeRTOS()
-
-# Mock GPIO functionality
 class MockGPIO:
     """Mock class for GPIO functionality"""
     
@@ -166,14 +170,18 @@ class MockGPIO:
         pin = 0
         while pin_bit_mask:
             if pin_bit_mask & 1:
+                # Set initial level based on pull-up/pull-down configuration
+                initial_level = 1 if config.pull_up_en else 0
+                
                 self.pins[pin] = {
                     'mode': config.mode,
                     'pull_up_en': config.pull_up_en,
                     'pull_down_en': config.pull_down_en,
                     'intr_type': config.intr_type,
-                    'level': 0  # Default level is low
+                    'level': initial_level,
+                    'configured': True
                 }
-                print(f"DEBUG: Configured GPIO {pin}, pull_up: {config.pull_up_en}, pull_down: {config.pull_down_en}")
+                print(f"DEBUG: Configured GPIO {pin}, pull_up: {config.pull_up_en}, pull_down: {config.pull_down_en}, initial_level: {initial_level}")
             pin_bit_mask >>= 1
             pin += 1
         
@@ -182,11 +190,14 @@ class MockGPIO:
     def gpio_get_level(self, gpio_num):
         """Get the level of a GPIO pin"""
         if gpio_num in self.pins:
-            return self.pins[gpio_num]['level']
+            level = self.pins[gpio_num]['level']
+            print(f"DEBUG: GPIO {gpio_num} level read: {level}")
+            return level
+        print(f"DEBUG: GPIO {gpio_num} not configured, returning 0")
         return 0
     
     def gpio_set_level(self, gpio_num, level):
-        """Set the level of a GPIO pin"""
+        """Set the level of a GPIO pin (simulates external button press/release)"""
         if gpio_num in self.pins:
             old_level = self.pins[gpio_num]['level']
             self.pins[gpio_num]['level'] = level
@@ -195,7 +206,10 @@ class MockGPIO:
             # Trigger ISR if level changed and there's a handler
             if old_level != level and gpio_num in self.isr_handlers:
                 print(f"DEBUG: Level changed, triggering ISR for GPIO {gpio_num}")
-                self.isr_handlers[gpio_num](self.isr_args[gpio_num])
+                try:
+                    self.isr_handlers[gpio_num](self.isr_args[gpio_num])
+                except Exception as e:
+                    print(f"DEBUG: Error in ISR handler: {e}")
             else:
                 if old_level == level:
                     print(f"DEBUG: Level didn't change, not triggering ISR")
@@ -203,7 +217,7 @@ class MockGPIO:
                     print(f"DEBUG: No ISR handler for GPIO {gpio_num}")
             
             return esp.ESP_OK
-        print(f"DEBUG: GPIO {gpio_num} not found in gpio_set_level")
+        print(f"DEBUG: GPIO {gpio_num} not configured in gpio_set_level")
         return esp.ESP_ERR_INVALID_ARG
     
     def gpio_install_isr_service(self, intr_alloc_flags):
@@ -222,6 +236,10 @@ class MockGPIO:
             print(f"DEBUG: Invalid GPIO number: {gpio_num}")
             return esp.ESP_ERR_INVALID_ARG
         
+        if not self.isr_service_installed:
+            print(f"DEBUG: ISR service not installed")
+            return esp.ESP_ERR_INVALID_STATE
+        
         self.isr_handlers[gpio_num] = isr_handler
         self.isr_args[gpio_num] = args
         print(f"DEBUG: ISR handler added for GPIO {gpio_num}")
@@ -231,141 +249,48 @@ class MockGPIO:
         """Remove an ISR handler for a GPIO pin"""
         if gpio_num in self.isr_handlers:
             del self.isr_handlers[gpio_num]
-            del self.isr_args[gpio_num]
+            if gpio_num in self.isr_args:
+                del self.isr_args[gpio_num]
             print(f"DEBUG: ISR handler removed for GPIO {gpio_num}")
             return esp.ESP_OK
         print(f"DEBUG: No ISR handler for GPIO {gpio_num}")
         return esp.ESP_ERR_INVALID_ARG
+    
+    def reset(self):
+        """Reset GPIO state"""
+        self.pins = {}
+        self.isr_handlers = {}
+        self.isr_args = {}
+        self.isr_service_installed = False
 
-# Create a global instance of MockGPIO
-gpio = MockGPIO()
-
-# Mock button_longpress component
-class ButtonConfig(ctypes.Structure):
-    """Button configuration structure"""
-    _fields_ = [
-        ("gpio_num", ctypes.c_int),
-        ("active_level", ctypes.c_bool),
-        ("debounce_time_ms", ctypes.c_uint32),
-        ("long_press_time_ms", ctypes.c_uint32),
-        ("double_click_time_ms", ctypes.c_uint32),
-        ("callback", ctypes.c_void_p)
-    ]
-
-# Mock the button_longpress component
-@pytest.fixture
-def mock_button_component(monkeypatch):
-    """Mock the button_longpress component"""
+class MockESP:
+    """Mock class for ESP-IDF functionality"""
     
-    # Import the module here to avoid circular imports
-    import button_longpress
+    # ESP error codes
+    ESP_OK = 0
+    ESP_FAIL = -1
+    ESP_ERR_INVALID_ARG = -2
+    ESP_ERR_INVALID_STATE = -3
     
-    # Mock ESP-IDF functions
-    monkeypatch.setattr('button_longpress.esp_log_write', MagicMock())
-    monkeypatch.setattr('button_longpress.gpio_config', gpio.gpio_config)
-    monkeypatch.setattr('button_longpress.gpio_get_level', gpio.gpio_get_level)
-    monkeypatch.setattr('button_longpress.gpio_set_level', gpio.gpio_set_level)
-    monkeypatch.setattr('button_longpress.gpio_install_isr_service', gpio.gpio_install_isr_service)
-    monkeypatch.setattr('button_longpress.gpio_isr_handler_add', gpio.gpio_isr_handler_add)
-    monkeypatch.setattr('button_longpress.gpio_isr_handler_remove', gpio.gpio_isr_handler_remove)
+    # GPIO definitions
+    GPIO_NUM_MAX = 40
+    GPIO_MODE_INPUT = 1
+    GPIO_PULLUP_ENABLE = 1
+    GPIO_PULLDOWN_ENABLE = 1
+    GPIO_PULLUP_DISABLE = 0
+    GPIO_PULLDOWN_DISABLE = 0
+    GPIO_INTR_ANYEDGE = 3
     
-    # Mock FreeRTOS functions
-    monkeypatch.setattr('button_longpress.xTimerCreate', freertos.xTimerCreate)
-    monkeypatch.setattr('button_longpress.xTimerStart', freertos.xTimerStart)
-    monkeypatch.setattr('button_longpress.xTimerStop', freertos.xTimerStop)
-    monkeypatch.setattr('button_longpress.xTimerDelete', freertos.xTimerDelete)
-    monkeypatch.setattr('button_longpress.xTimerReset', freertos.xTimerReset)
-    monkeypatch.setattr('button_longpress.xTimerResetFromISR', freertos.xTimerResetFromISR)
-    monkeypatch.setattr('button_longpress.pvTimerGetTimerID', freertos.pvTimerGetTimerID)
-    monkeypatch.setattr('button_longpress.xTaskGetTickCount', freertos.xTaskGetTickCount)
+    # Button states - соответствуют C реализации
+    BUTTON_STATE_IDLE = 0
+    BUTTON_STATE_PRESSED = 1
+    BUTTON_STATE_LONG_PRESS = 2
+    BUTTON_STATE_SHORT_PRESS = 3
+    BUTTON_STATE_DOUBLE_CLICK = 4
     
-    # Reset mock state
-    gpio.pins = {}
-    gpio.isr_handlers = {}
-    gpio.isr_args = {}
-    gpio.isr_service_installed = False
-    freertos.timers = {}
-    freertos.timer_id = 0
-    freertos.current_time_ms = 0
-    
-    return {
-        'gpio': gpio,
-        'freertos': freertos,
-        'esp': esp
-    }
-
-@pytest.fixture
-def button_callback():
-    """Create a button callback function"""
-    # Define a C-compatible callback function type
-    BUTTON_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_int)
-    
-    # Create a callback function that does nothing
-    @BUTTON_CALLBACK
-    def callback(event):
-        return None
-    
-    return callback
-
-@pytest.fixture
-def button_config(button_callback):
-    """Create a button configuration"""
-    config = {
-        'gpio_num': 4,
-        'active_level': True,
-        'debounce_time_ms': 20,
-        'long_press_time_ms': 1000,
-        'double_click_time_ms': 300,
-        'callback': button_callback
-    }
-    return config
-
-# Add metadata to test report
-def pytest_configure(config):
-    """Add metadata to pytest HTML report"""
-    # Add environment info
-    config._metadata = {
-        'Project': 'ESP-IDF Button Component',
-        'Python': sys.version,
-        'Platform': sys.platform,
-        'CI': os.environ.get('CI', 'false')
-    }
-    
-    # Create results directory if it doesn't exist
-    if not os.path.exists('results'):
-        os.makedirs('results')
-
-# Custom hook for test results
-@pytest.hookimpl(tryfirst=True, hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    """Collect test results for reporting"""
-    outcome = yield
-    report = outcome.get_result()
-    
-    # Store test results for later use
-    if report.when == 'call':
-        test_result = {
-            'name': item.name,
-            'outcome': report.outcome,
-            'duration': report.duration,
-            'longrepr': str(report.longrepr) if report.longrepr else None
-        }
-        
-        # Save to file for CI/CD reporting
-        results_file = os.path.join('results', 'test_results.json')
-        
-        # Read existing results if file exists
-        results = []
-        if os.path.exists(results_file):
-            with open(results_file, 'r') as f:
-                try:
-                    results = json.load(f)
-                except json.JSONDecodeError:
-                    results = []
-        
-        # Add new result
-        results.append(test_result)
-        
-        # Write updated results
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=2)
+    # Button events
+    BUTTON_EVENT_PRESSED = 0
+    BUTTON_EVENT_RELEASED = 1
+    BUTTON_EVENT_CLICK = 2
+    BUTTON_EVENT_LONG_PRESS = 3
+    BUTTON_EVENT_DOUBLE_CLICK = 4
