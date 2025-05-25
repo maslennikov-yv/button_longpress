@@ -85,7 +85,12 @@ jobs:
           COVERAGE=$(grep -Po 'line-rate="\K[^"]*' results/coverage.xml | awk '{print $1 * 100}')
           echo "Coverage: $COVERAGE%"
           echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
-          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+          
+          # Convert to integer for comparison (multiply by 100 to avoid decimals)
+          COVERAGE_INT=$(echo "$COVERAGE * 100" | bc | cut -d. -f1)
+          THRESHOLD_INT=8000  # 80.00 * 100
+          
+          if [ "$COVERAGE_INT" -lt "$THRESHOLD_INT" ]; then
             echo "::error::Test coverage ($COVERAGE%) is below 80%"
             exit 1
           else
