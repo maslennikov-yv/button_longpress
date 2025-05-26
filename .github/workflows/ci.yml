@@ -12,6 +12,12 @@ on:
       - '**.md'
       - 'docs/**'
 
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  actions: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
